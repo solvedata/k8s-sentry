@@ -13,6 +13,8 @@ There are two alternatives implementations:
 * Pod containers terminating with a non-zero exit code
 * Pods failing completely
 
+**Note:** This fork has removed the Pod watching logic as it was causing spamming events from old failed jobs.
+
 ## Deployment
 
 See [deploy](deploy/) for Kubernetes manifests and installation instructions.

@@ -19,13 +19,11 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"strconv"
 	"time"
 
 	"github.com/getsentry/sentry-go"
 	lru "github.com/hashicorp/golang-lru"
 	v1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
@@ -57,28 +55,7 @@ func (app *application) Run() (chan struct{}, error) {
 	}
 	stop := make(chan struct{})
 	go app.monitorEvents(stop)
-	go app.monitorPods(stop)
 	return stop, nil
-}
-
-func (app application) monitorPods(stop chan struct{}) {
-	watchList := cache.NewListWatchFromClient(
-		app.clientset.CoreV1().RESTClient(),
-		"pods",
-		app.namespace,
-		fields.Everything(),
-	)
-
-	_, controller := cache.NewInformer(
-		watchList,
-		&v1.Pod{},
-		time.Second*30,
-		cache.ResourceEventHandlerFuncs{
-			UpdateFunc: app.handlePodUpdate,
-		},
-	)
-
-	controller.Run(stop)
 }
 
 func (app application) monitorEvents(stop chan struct{}) {
@@ -98,112 +75,6 @@ func (app application) monitorEvents(stop chan struct{}) {
 	)
 
 	controller.Run(stop)
-}
-
-func (app *application) handlePodUpdate(oldObj, newObj interface{}) {
-	pod, ok := newObj.(*v1.Pod)
-	if !ok {
-		sentry.CaptureMessage("Unexpected pod type")
-		return
-	}
-
-	var sentryEvent *sentry.Event
-
-	if pod.Status.Phase == v1.PodFailed {
-		// All containers in the pod have terminated, and at least one container has
-		// terminated in a failure (exited with a non-zero exit code or was stopped by the system).
-		sentryEvent = sentry.NewEvent()
-		sentryEvent.Message = pod.Status.Message
-
-		copyTags(sentryEvent, app.defaultTags)
-		sentryEvent.Tags["reason"] = pod.Status.Reason
-	} else {
-		// The Pod is still running. Check if one of its containers terminated with a non-zero exit code.
-		// If so report that as an error.
-		// Note that this will fail if multiple containers in the pod are terminating at the same time.
-		// Since that should be rare, and hopefully someone will investigate on any error anyway we
-		// ignore that situation (for now).
-		allContainers := append(pod.Status.InitContainerStatuses, pod.Status.ContainerStatuses...)
-		for _, status := range allContainers {
-			if status.LastTerminationState.Terminated != nil && status.LastTerminationState.Terminated.ExitCode != 0 && app.isNewTermination(pod, &status) {
-				// Note that we only care about terminations in the last half seconds. This prevents
-				// us from treating updates for other reasons after a container terminated as another
-				// occurance of the termination.
-				sentryEvent = sentry.NewEvent()
-				sentryEvent.Message = status.LastTerminationState.Terminated.Message
-				if sentryEvent.Message == "" {
-					// OOMKilled does not leave a message :(
-					sentryEvent.Message = status.LastTerminationState.Terminated.Reason
-				}
-				sentryEvent.Release = status.Image
-
-				copyTags(sentryEvent, app.defaultTags)
-				sentryEvent.Tags["reason"] = status.LastTerminationState.Terminated.Reason
-				sentryEvent.Extra["exit-code"] = strconv.FormatInt(int64(status.LastTerminationState.Terminated.ExitCode), 10)
-				sentryEvent.Extra["restartCount"] = status.RestartCount
-				break
-			}
-		}
-	}
-
-	// There are many reasons a Pod can be updated. We are only interested in containers
-	// that terminated uncleanly
-
-	if sentryEvent != nil {
-		sentryEvent.Platform = "other"
-		sentryEvent.Level = sentry.LevelError
-		if app.defaultEnvironment != "" {
-			sentryEvent.Environment = app.defaultEnvironment
-		} else {
-			sentryEvent.Environment = pod.Namespace
-		}
-
-		sentryEvent.Fingerprint = append(
-			[]string{
-				sentryEvent.Tags["reason"],
-				sentryEvent.Message,
-			},
-			fingerprintFromMeta(&pod.ObjectMeta)...)
-
-		sentryEvent.Tags["namespace"] = pod.Namespace
-		if pod.ClusterName != "" {
-			sentryEvent.Tags["cluster"] = pod.ClusterName
-		}
-		sentryEvent.Tags["kind"] = pod.Kind
-		for k, v := range pod.ObjectMeta.Labels {
-			sentryEvent.Tags[k] = v
-		}
-		sentryEvent.Message = fmt.Sprintf("Pod/%s: %s", pod.Name, sentryEvent.Message)
-
-		sentry.CaptureEvent(sentryEvent)
-	}
-}
-
-func (app *application) isNewTermination(pod *v1.Pod, status *v1.ContainerStatus) bool {
-	finishedAt := status.LastTerminationState.Terminated.FinishedAt
-	age := metav1.Now().Sub(finishedAt.Time)
-
-	key := terminationKey{
-		podUID:        pod.UID,
-		containerName: status.Name,
-	}
-	cachedTime, seen := app.terminationsSeen.Get(key)
-	app.terminationsSeen.Add(key, finishedAt)
-
-	// We skip old records. These happen if a container terminated before, and then the
-	// pod later gets updated for other reasons with the termination record still in place.
-	if age.Microseconds() > 5000 {
-		return false
-	}
-
-	prevTime, ok := cachedTime.(metav1.Time)
-	if !ok {
-		// If this happened we have bad data in the cache and we are best off to
-		// not do anything anymore
-		return false
-	}
-
-	return !seen || finishedAt.After(prevTime.Time)
 }
 
 func (app application) handleEventAdd(obj interface{}) {
