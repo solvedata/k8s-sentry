@@ -1,6 +1,6 @@
-module wiggy.net/k8s-sentry
+module solvedata/k8s-sentry
 
-go 1.13
+go 1.14
 
 require (
 	github.com/getsentry/sentry-go v0.3.0

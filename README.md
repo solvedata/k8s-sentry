@@ -38,7 +38,7 @@ Configuration is done completely via environment variables.
 
 ## Building
 
-This project uses [Go modules](https://github.com/golang/go/wiki/Modules) and requires Go 1.13 or later. From a git checkout you can build the binary using `go build`:
+This project uses [Go modules](https://github.com/golang/go/wiki/Modules) and requires Go 1.14 or later. From a git checkout you can build the binary using `go build`:
 
 ```shell
 $ go build
