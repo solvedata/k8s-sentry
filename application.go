@@ -40,7 +40,9 @@ type terminationKey struct {
 type application struct {
 	clientset          *kubernetes.Clientset
 	defaultEnvironment string
+	release            string
 	namespace          string
+	defaultTags        map[string]string
 	terminationsSeen   *lru.Cache
 }
 
@@ -112,6 +114,8 @@ func (app *application) handlePodUpdate(oldObj, newObj interface{}) {
 		// terminated in a failure (exited with a non-zero exit code or was stopped by the system).
 		sentryEvent = sentry.NewEvent()
 		sentryEvent.Message = pod.Status.Message
+
+		copyTags(sentryEvent, app.defaultTags)
 		sentryEvent.Tags["reason"] = pod.Status.Reason
 	} else {
 		// The Pod is still running. Check if one of its containers terminated with a non-zero exit code.
@@ -132,6 +136,8 @@ func (app *application) handlePodUpdate(oldObj, newObj interface{}) {
 					sentryEvent.Message = status.LastTerminationState.Terminated.Reason
 				}
 				sentryEvent.Release = status.Image
+
+				copyTags(sentryEvent, app.defaultTags)
 				sentryEvent.Tags["reason"] = status.LastTerminationState.Terminated.Reason
 				sentryEvent.Extra["exit-code"] = strconv.FormatInt(int64(status.LastTerminationState.Terminated.ExitCode), 10)
 				sentryEvent.Extra["restartCount"] = status.RestartCount
@@ -230,6 +236,7 @@ func (app application) handleEventAdd(obj interface{}) {
 		evt.Message,
 	}
 
+	copyTags(sentryEvent, app.defaultTags)
 	sentryEvent.Tags["namespace"] = evt.InvolvedObject.Namespace
 	sentryEvent.Tags["component"] = evt.Source.Component
 	if evt.ClusterName != "" {
@@ -285,4 +292,10 @@ func getEventFingerprint(evt *v1.Event) []string {
 
 func inCluster() bool {
 	return os.Getenv("KUBERNETES_SERVICE_HOST") != "" && os.Getenv("KUBERNETES_SERVICE_PORT") != ""
+}
+
+func copyTags(event *sentry.Event, tags map[string]string) {
+	for k, v := range tags {
+		event.Tags[k] = v
+	}
 }

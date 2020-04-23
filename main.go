@@ -17,11 +17,13 @@ package main
 
 import (
 	"flag"
+	"fmt"
 	"log"
 	"os"
 	"os/signal"
 	"os/user"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -33,6 +35,8 @@ import (
 
 var configFlag = flag.String("kubeconfig", "", "Configuration file")
 var defaultEnvironment = os.Getenv("ENVIRONMENT")
+var release = os.Getenv("RELEASE")
+var defaultTags = os.Getenv("TAGS")
 
 func main() {
 	flag.Parse()
@@ -41,8 +45,14 @@ func main() {
 		log.Println("Warning: SENTRY_DSN environment variable not set. Can not report to Sentry")
 	}
 
-	err := sentry.Init(sentry.ClientOptions{
+	tags, err := parseTags(defaultTags)
+	if err != nil {
+		log.Fatalf("Error parsing default tags: %v", err)
+	}
+
+	err = sentry.Init(sentry.ClientOptions{
 		Environment: defaultEnvironment,
+		Release:     release,
 	})
 	if err != nil {
 		log.Fatalf("Error initialising sentry: %v", err)
@@ -58,6 +68,7 @@ func main() {
 		clientset:          clientset,
 		defaultEnvironment: os.Getenv("ENVIRONMENT"),
 		namespace:          os.Getenv("NAMESPACE"),
+		defaultTags:        tags,
 	}
 
 	stopSignal, err := app.Run()
@@ -93,4 +104,21 @@ func createKubernetesClient(configFile string) (client *kubernetes.Clientset, er
 		return
 	}
 	return kubernetes.NewForConfig(config)
+}
+
+func parseTags(tags string) (map[string]string, error) {
+	result := make(map[string]string)
+	for _, tag := range strings.Split(tags, ",") {
+		keyValue := strings.Split(tag, "=")
+		if len(keyValue) != 2 {
+			return nil, fmt.Errorf("invalid tag '%s', expected key=value pair", tag)
+		}
+
+		key := keyValue[0]
+		value := keyValue[1]
+
+		result[key] = value
+	}
+
+	return result, nil
 }
